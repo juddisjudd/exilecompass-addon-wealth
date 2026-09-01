@@ -49,6 +49,11 @@ const CSS = `
   .wl-scroll::-webkit-scrollbar { display:none; }
   .wl-section { font-size:9.5px; font-weight:700; letter-spacing:.07em; text-transform:uppercase;
     color:var(--c-accent); padding:2px 0; }
+  .wl-section-row { display:flex; align-items:center; gap:6px; }
+  .wl-section-row .wl-section { flex:1; }
+  .wl-mini { font-size:9.5px !important; padding:1px 7px !important; }
+  .wl-done { flex:0 0 auto; align-self:stretch; font-weight:600; padding:5px 8px !important;
+    background:rgba(237,230,213,.1) !important; }
   .wl-tabs { display:flex; flex-direction:column; border:1px solid rgba(167,154,133,.18); }
   .wl-tabrow { display:flex; align-items:center; gap:6px; padding:3px 6px;
     border-bottom:1px solid rgba(167,154,133,.1); }
@@ -116,7 +121,8 @@ interface State {
   league: string;
   tabs: StashTabMeta[];
   selected: Set<string>;
-  showTabs: boolean;
+  /** `edit` swaps the results for the tab picker; never both at once. */
+  view: 'results' | 'edit';
   last: LastRun | null;
   history: Snapshot[];
   running: boolean;
@@ -148,7 +154,7 @@ const mount: MountFn = async ({ root, host }) => {
     league: '',
     tabs: [],
     selected: new Set(),
-    showTabs: false,
+    view: 'results',
     last: null,
     history: [],
     running: false,
@@ -189,7 +195,7 @@ const mount: MountFn = async ({ root, host }) => {
     try {
       state.tabs = await fetchStashTabs(poe, state.league);
       // First visit to a league: nothing tracked yet, so open the picker.
-      if (state.selected.size === 0) state.showTabs = true;
+      if (state.selected.size === 0) state.view = 'edit';
     } catch (e) {
       state.error = e instanceof Error ? e.message : String(e);
     }
@@ -290,6 +296,7 @@ const mount: MountFn = async ({ root, host }) => {
       });
       await writeJson(`last:${state.league}`, state.last);
       await writeJson(`history:${state.league}`, state.history);
+      state.view = 'results';
     } catch (e) {
       state.error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -384,20 +391,13 @@ const mount: MountFn = async ({ root, host }) => {
     });
     bar.append(leagueSel);
 
-    const tabsBtn = el('button', undefined, `Tabs (${state.selected.size})`);
-    tabsBtn.type = 'button';
-    tabsBtn.disabled = state.running;
-    tabsBtn.addEventListener('click', () => {
-      state.showTabs = !state.showTabs;
-      render();
-    });
-    bar.append(tabsBtn);
-
     const snap = el('button', undefined, state.running ? 'Running…' : 'Snapshot');
     snap.type = 'button';
     snap.disabled = state.running || state.selected.size === 0;
     snap.title =
-      state.selected.size === 0 ? 'Pick stash tabs to track first' : 'Fetch and value the selected tabs';
+      state.selected.size === 0
+        ? 'Use Edit under Tracked tabs to pick stash tabs first'
+        : 'Fetch and value the tracked tabs';
     snap.addEventListener('click', () => void snapshot());
     bar.append(snap);
 
@@ -439,8 +439,29 @@ const mount: MountFn = async ({ root, host }) => {
     const scroll = el('div', 'wl-scroll');
     shell.append(scroll);
 
-    if (state.showTabs) {
-      scroll.append(el('div', 'wl-section', 'Tracked stash tabs'));
+    if (state.view === 'edit') {
+      // The picker replaces the results while it is open, so there is never a
+      // checkbox list stacked above a look-alike values list.
+      const head = el('div', 'wl-section-row');
+      head.append(el('div', 'wl-section', 'Choose stash tabs to track'));
+      const allBtn = el('button', 'wl-mini', 'All');
+      allBtn.type = 'button';
+      allBtn.addEventListener('click', () => {
+        for (const tab of state.tabs) state.selected.add(tab.id);
+        void writeJson(`tabs:${state.league}`, [...state.selected]);
+        render();
+      });
+      const noneBtn = el('button', 'wl-mini', 'None');
+      noneBtn.type = 'button';
+      noneBtn.addEventListener('click', () => {
+        state.selected.clear();
+        void writeJson(`tabs:${state.league}`, []);
+        render();
+      });
+      head.append(allBtn, noneBtn);
+      scroll.append(head);
+      scroll.append(el('p', 'wl-note', 'Checked tabs are fetched and valued on every snapshot.'));
+
       const list = el('div', 'wl-tabs');
       if (state.tabs.length === 0) {
         list.append(el('div', 'wl-empty', state.error ? 'Could not load stash tabs.' : 'Loading stash tabs…'));
@@ -462,21 +483,65 @@ const mount: MountFn = async ({ root, host }) => {
         label.htmlFor = box.id;
         label.append(' ', el('span', 'wl-tabtype', tab.type.replace(/Stash$/, '')));
         row.append(box, label);
+        const valued = state.last?.perTab.find((p) => p.id === tab.id);
+        if (valued) row.append(el('span', 'wl-tabval', `${formatChaos(valued.chaos)} c`));
         list.append(row);
       }
       scroll.append(list);
+
+      const done = el(
+        'button',
+        'wl-done',
+        `Done — tracking ${state.selected.size} tab${state.selected.size === 1 ? '' : 's'}`,
+      );
+      done.type = 'button';
+      done.addEventListener('click', () => {
+        state.view = 'results';
+        render();
+      });
+      scroll.append(done);
+
+      const foot = el('div', 'wl-foot');
+      foot.append(
+        el('span', undefined, 'PoE1 stashes · Prices by poe.ninja · rares/gems/maps not counted'),
+        el('span', undefined, state.poeStatus?.poeName ?? ''),
+      );
+      shell.append(foot);
+      return;
     }
 
+    const trackedHead = el('div', 'wl-section-row');
+    trackedHead.append(el('div', 'wl-section', `Tracked tabs (${state.selected.size})`));
+    const editBtn = el('button', 'wl-mini', 'Edit');
+    editBtn.type = 'button';
+    editBtn.disabled = state.running;
+    editBtn.addEventListener('click', () => {
+      state.view = 'edit';
+      render();
+    });
+    trackedHead.append(editBtn);
+    scroll.append(trackedHead);
+
+    const tracked = el('div', 'wl-tabs');
     if (state.last) {
-      scroll.append(el('div', 'wl-section', 'Per tab'));
-      const tabs = el('div', 'wl-tabs');
       for (const tab of [...state.last.perTab].sort((a, b) => b.chaos - a.chaos)) {
         const row = el('div', 'wl-tabrow');
         row.append(el('label', undefined, tab.name), el('span', 'wl-tabval', `${formatChaos(tab.chaos)} c`));
-        tabs.append(row);
+        tracked.append(row);
       }
-      scroll.append(tabs);
+    } else if (state.selected.size > 0) {
+      for (const tab of state.tabs.filter((t) => state.selected.has(t.id))) {
+        const row = el('div', 'wl-tabrow');
+        row.append(el('label', undefined, tab.name), el('span', 'wl-tabtype', 'not valued yet'));
+        tracked.append(row);
+      }
+      if (state.tabs.length === 0) tracked.append(el('div', 'wl-empty', 'Loading stash tabs…'));
+    } else {
+      tracked.append(el('div', 'wl-empty', 'No tabs tracked yet — use Edit to pick some.'));
+    }
+    scroll.append(tracked);
 
+    if (state.last) {
       scroll.append(el('div', 'wl-section', `Items (${state.last.items.length})`));
 
       const search = el('input', 'wl-search');
@@ -557,10 +622,8 @@ const mount: MountFn = async ({ root, host }) => {
         }
       };
       renderItems();
-    } else if (!state.showTabs) {
-      scroll.append(
-        el('div', 'wl-empty', 'Pick the stash tabs to track, then take a snapshot to value them.'),
-      );
+    } else if (state.selected.size > 0) {
+      scroll.append(el('div', 'wl-empty', 'Take a snapshot to value the tracked tabs.'));
     }
 
     const foot = el('div', 'wl-foot');
