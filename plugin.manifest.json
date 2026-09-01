@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "1.0",
+  "id": "dev.juddisjudd.wealth-addon",
+  "name": "Wealth",
+  "description": "Stash wealth tracker: values your selected PoE1 stash tabs with poe.ninja prices and tracks the total over time.",
+  "author": "Judd",
+  "homepage": "https://github.com/juddisjudd/exilecompass-addon-wealth",
+  "version": "0.1.0",
+  "kind": "addon",
+  "entry": {
+    "panel": "./dist/panel.js",
+    "data": "./data/default.json"
+  },
+  "compatibility": {
+    "app": ">=1.5.5",
+    "pluginApi": "^1.2.0"
+  },
+  "permissions": [
+    "storage.read",
+    "storage.write",
+    "ui.panel",
+    "poe.stashes",
+    "network.fetch:poe.ninja",
+    "network.fetch:web.poecdn.com",
+    "shell.open:exilecompass.com"
+  ],
+  "contributions": {
+    "data.providers": [],
+    "view.panels": [
+      {
+        "id": "wealth",
+        "title": "Wealth",
+        "icon": "panel",
+        "pinDefault": false
+      }
+    ],
+    "settings.sections": [],
+    "actions.commands": []
+  }
+}
