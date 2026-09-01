@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { valueItem, valueTab, formatChaos } from '../src/valuation';
+import { compareItems, valueItem, valueTab, formatChaos, type ValuedItem } from '../src/valuation';
 import { appendSnapshot, HISTORY_CAP, sparklinePoints } from '../src/history';
+import { defaultLeague } from '../src/poe';
 import type { PriceBook } from '../src/pricing';
 
 const book: PriceBook = {
@@ -14,6 +15,10 @@ const book: PriceBook = {
   uniques: new Map([
     ['headhunter', 5000],
     ['mageblood', 12000],
+  ]),
+  meta: new Map([
+    ['divine orb', { change: 3.2, category: 'Currency' }],
+    ['headhunter', { change: -8.1, category: 'Uniques' }],
   ]),
   divineChaos: 200,
 };
@@ -46,6 +51,61 @@ describe('valueItem', () => {
   test('unpriceable items return null', () => {
     expect(valueItem({ name: 'Random Rare', typeLine: 'Vaal Regalia', frameType: 2 }, book)).toBeNull();
     expect(valueItem({}, book)).toBeNull();
+  });
+
+  test('carries poe.ninja change and category when known', () => {
+    const divine = valueItem({ typeLine: 'Divine Orb', stackSize: 1, frameType: 5 }, book);
+    expect(divine?.change).toBe(3.2);
+    expect(divine?.category).toBe('Currency');
+    const hh = valueItem({ name: 'Headhunter', typeLine: 'Leather Belt', frameType: 3 }, book);
+    expect(hh?.change).toBe(-8.1);
+    expect(hh?.category).toBe('Uniques');
+    expect(valueItem({ typeLine: 'Golden Oil', stackSize: 1, frameType: 5 }, book)?.change).toBeUndefined();
+  });
+});
+
+describe('compareItems', () => {
+  const items: ValuedItem[] = [
+    { name: 'B', count: 5, unitChaos: 1, totalChaos: 5, change: -2 },
+    { name: 'A', count: 1, unitChaos: 100, totalChaos: 100, change: 10 },
+    { name: 'C', count: 3, unitChaos: 10, totalChaos: 30 },
+  ];
+
+  test('sorts by total descending by default direction', () => {
+    expect([...items].sort(compareItems('total', -1)).map((i) => i.name)).toEqual(['A', 'C', 'B']);
+  });
+
+  test('name ascending', () => {
+    expect([...items].sort(compareItems('name', 1)).map((i) => i.name)).toEqual(['A', 'B', 'C']);
+  });
+
+  test('unknown 7d change sorts last in both directions', () => {
+    expect([...items].sort(compareItems('change', -1)).map((i) => i.name)).toEqual(['A', 'B', 'C']);
+    expect([...items].sort(compareItems('change', 1)).map((i) => i.name)).toEqual(['B', 'A', 'C']);
+  });
+});
+
+describe('defaultLeague', () => {
+  test('skips permanent leagues and their variants', () => {
+    expect(
+      defaultLeague([
+        'Standard',
+        'Hardcore',
+        'Solo Self-Found',
+        'Hardcore SSF',
+        'Ruthless',
+        'Hardcore Ruthless',
+        'SSF Ruthless',
+        'Hardcore SSF Ruthless',
+        'Allflame',
+        'Hardcore Allflame',
+      ]),
+    ).toBe('Allflame');
+  });
+
+  test('falls back to the first entry when nothing qualifies', () => {
+    expect(defaultLeague(['Standard', 'Hardcore'])).toBe('Standard');
+    expect(defaultLeague([])).toBe('');
   });
 });
 

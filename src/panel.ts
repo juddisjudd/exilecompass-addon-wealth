@@ -1,11 +1,21 @@
 import type { MountFn, PoeStatus } from './types';
-import { fetchLeagues, fetchStashItems, fetchStashTabs, RateLimitError, type StashTabMeta } from './poe';
+import {
+  defaultLeague,
+  fetchLeagues,
+  fetchStashItems,
+  fetchStashTabs,
+  RateLimitError,
+  type StashTabMeta,
+} from './poe';
 import { loadPriceBook } from './pricing';
-import { formatChaos, valueTab, type ValuedItem } from './valuation';
+import { compareItems, formatChaos, valueTab, type SortKey, type ValuedItem } from './valuation';
 import { appendSnapshot, sparklinePoints, type Snapshot } from './history';
 
 const SETTINGS_URL = 'https://exilecompass.com/settings';
-const TOP_ITEMS = 25;
+// Add-on storage shares the app's settings file, so the stored item list stays
+// modest; the table itself shows everything stored.
+const ITEMS_CAP = 250;
+const MAX_ROWS = 100;
 // Courtesy gap between stash requests — GGG's stash endpoint is one of the
 // most tightly rate-limited APIs, and a snapshot walks many tabs.
 const TAB_FETCH_GAP_MS = 400;
@@ -13,7 +23,7 @@ const TAB_FETCH_GAP_MS = 400;
 const CSS = `
   .wl { display:flex; flex-direction:column; height:100%; gap:6px; font-size:11px; }
   .wl-bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; flex:0 0 auto; }
-  .wl select, .wl button { font:inherit; color:var(--c-primary); background:#121214;
+  .wl select, .wl input, .wl button { font:inherit; color:var(--c-primary); background:#121214;
     border:1px solid rgba(167,154,133,.34); padding:3px 6px; }
   .wl button { cursor:pointer; }
   .wl button:hover:not(:disabled) { border-color:rgba(237,230,213,.5); }
@@ -23,11 +33,17 @@ const CSS = `
   .wl-note { color:var(--c-accent); font-size:10.5px; flex:0 0 auto; line-height:1.5; }
   .wl-link { color:#e2b657; cursor:pointer; text-decoration:underline; }
   .wl-empty { padding:12px 6px; color:var(--c-accent); font-style:italic; }
-  .wl-total { display:flex; align-items:baseline; gap:10px; flex:0 0 auto; padding:6px 0 2px; }
+  .wl-total { display:flex; align-items:baseline; gap:10px; flex:0 0 auto; padding:6px 0 0; }
   .wl-total-main { font-size:20px; font-weight:700; color:var(--c-primary); }
   .wl-total-div { font-size:12px; color:var(--c-accent); }
+  .wl-cats { display:flex; flex-wrap:wrap; gap:4px; flex:0 0 auto; }
+  .wl-cat { display:inline-flex; align-items:center; gap:5px; border:1px solid rgba(167,154,133,.28);
+    background:rgba(167,154,133,.07); padding:1px 7px; font-size:10px; }
+  .wl-cat-name { color:var(--c-accent); }
+  .wl-cat-val { color:var(--c-primary); font-variant-numeric:tabular-nums; }
   .wl-spark { flex:0 0 auto; }
   .wl-spark svg { display:block; width:100%; height:36px; }
+  .wl-search { width:100%; box-sizing:border-box; flex:0 0 auto; }
   .wl-scroll { flex:1 1 auto; min-height:0; overflow-y:auto; display:flex; flex-direction:column;
     gap:8px; scrollbar-width:none; }
   .wl-scroll::-webkit-scrollbar { display:none; }
@@ -42,12 +58,23 @@ const CSS = `
   .wl-tabtype { font-size:9.5px; color:var(--c-accent); }
   .wl-tabval { font-variant-numeric:tabular-nums; color:var(--c-primary); }
   .wl-items { display:flex; flex-direction:column; border:1px solid rgba(167,154,133,.18); }
-  .wl-item { display:grid; grid-template-columns:18px minmax(0,1fr) auto auto; gap:6px;
+  .wl-head { display:grid; grid-template-columns:18px minmax(0,1fr) 34px 44px 64px; gap:6px;
+    padding:3px 6px; border-bottom:1px solid rgba(167,154,133,.22); background:rgba(167,154,133,.05); }
+  .wl-sort { background:none !important; border:none !important; padding:0 !important;
+    font-size:9.5px; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
+    color:var(--c-accent) !important; text-align:left; }
+  .wl-sort.num { text-align:right; }
+  .wl-sort.on, .wl-sort:hover { color:var(--c-primary) !important; }
+  .wl-item { display:grid; grid-template-columns:18px minmax(0,1fr) 34px 44px 64px; gap:6px;
     align-items:center; padding:3px 6px; border-bottom:1px solid rgba(167,154,133,.1); }
   .wl-item:last-child { border-bottom:none; }
   .wl-item img { width:18px; height:18px; object-fit:contain; }
   .wl-item-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .wl-item-count { color:var(--c-accent); font-size:10px; }
+  .wl-item-count { color:var(--c-accent); font-size:10px; text-align:right;
+    font-variant-numeric:tabular-nums; }
+  .wl-chg { font-size:10px; text-align:right; font-variant-numeric:tabular-nums; }
+  .wl-up { color:#5fa372; }
+  .wl-down { color:#e2333c; }
   .wl-item-val { font-variant-numeric:tabular-nums; font-weight:600; text-align:right; }
   .wl-foot { flex:0 0 auto; font-size:9.5px; color:var(--c-accent); display:flex;
     justify-content:space-between; gap:8px; }
@@ -68,12 +95,19 @@ interface TabResult {
   chaos: number;
 }
 
+interface WealthItem extends ValuedItem {
+  tabs?: string[];
+}
+
 interface LastRun {
   ts: number;
   totalChaos: number;
   divineChaos: number;
   perTab: TabResult[];
-  top: ValuedItem[];
+  items: WealthItem[];
+  categories: { name: string; chaos: number }[];
+  /** Pre-0.2.0 records stored a top list instead of the full item list. */
+  top?: WealthItem[];
 }
 
 interface State {
@@ -88,6 +122,9 @@ interface State {
   running: boolean;
   progress: string;
   error: string;
+  query: string;
+  sortKey: SortKey;
+  sortDir: 1 | -1;
 }
 
 const mount: MountFn = async ({ root, host }) => {
@@ -117,6 +154,9 @@ const mount: MountFn = async ({ root, host }) => {
     running: false,
     progress: '',
     error: '',
+    query: '',
+    sortKey: 'total',
+    sortDir: -1,
   };
 
   const readJson = async <T>(key: string): Promise<T | null> => {
@@ -133,9 +173,15 @@ const mount: MountFn = async ({ root, host }) => {
   // ── data loading ─────────────────────────────────────────────────────────
   async function loadLeagueState(): Promise<void> {
     state.selected = new Set((await readJson<string[]>(`tabs:${state.league}`)) ?? []);
-    state.last = await readJson<LastRun>(`last:${state.league}`);
+    const last = await readJson<LastRun>(`last:${state.league}`);
+    if (last) {
+      last.items = last.items ?? last.top ?? [];
+      last.categories = last.categories ?? [];
+    }
+    state.last = last;
     state.history = (await readJson<Snapshot[]>(`history:${state.league}`)) ?? [];
     state.tabs = [];
+    state.query = '';
   }
 
   async function loadTabs(): Promise<void> {
@@ -169,11 +215,7 @@ const mount: MountFn = async ({ root, host }) => {
     }
     const saved = await host.storage.get('league');
     state.league =
-      saved && state.leagues.includes(saved)
-        ? saved
-        : (state.leagues.find((l) => l !== 'Standard' && !l.startsWith('Hardcore')) ??
-          state.leagues[0] ??
-          '');
+      saved && state.leagues.includes(saved) ? saved : defaultLeague(state.leagues);
     await loadLeagueState();
     render();
     if (state.league) {
@@ -194,7 +236,7 @@ const mount: MountFn = async ({ root, host }) => {
       const book = await loadPriceBook(net, state.league);
 
       const perTab: TabResult[] = [];
-      const allItems: ValuedItem[] = [];
+      const merged = new Map<string, WealthItem>();
       for (let i = 0; i < selectedTabs.length; i += 1) {
         const tab = selectedTabs[i];
         state.progress = `${tab.name} (${i + 1}/${selectedTabs.length})`;
@@ -214,26 +256,33 @@ const mount: MountFn = async ({ root, host }) => {
         }
         const valued = valueTab(items, book);
         perTab.push({ id: tab.id, name: tab.name, chaos: valued.totalChaos });
-        allItems.push(...valued.items);
+        for (const item of valued.items) {
+          const existing = merged.get(item.name);
+          if (existing) {
+            existing.count += item.count;
+            existing.totalChaos += item.totalChaos;
+            if (!existing.tabs!.includes(tab.name)) existing.tabs!.push(tab.name);
+          } else {
+            merged.set(item.name, { ...item, tabs: [tab.name] });
+          }
+        }
         if (i < selectedTabs.length - 1) await sleep(TAB_FETCH_GAP_MS);
       }
 
-      const merged = new Map<string, ValuedItem>();
-      for (const item of allItems) {
-        const existing = merged.get(item.name);
-        if (existing) {
-          existing.count += item.count;
-          existing.totalChaos += item.totalChaos;
-        } else {
-          merged.set(item.name, { ...item });
-        }
-      }
-      const top = [...merged.values()]
+      const items = [...merged.values()]
         .sort((a, b) => b.totalChaos - a.totalChaos)
-        .slice(0, TOP_ITEMS);
+        .slice(0, ITEMS_CAP);
+      const byCategory = new Map<string, number>();
+      for (const item of merged.values()) {
+        const cat = item.category ?? 'Other';
+        byCategory.set(cat, (byCategory.get(cat) ?? 0) + item.totalChaos);
+      }
+      const categories = [...byCategory.entries()]
+        .map(([name, chaos]) => ({ name, chaos }))
+        .sort((a, b) => b.chaos - a.chaos);
       const totalChaos = perTab.reduce((sum, t) => sum + t.chaos, 0);
 
-      state.last = { ts: Date.now(), totalChaos, divineChaos: book.divineChaos, perTab, top };
+      state.last = { ts: Date.now(), totalChaos, divineChaos: book.divineChaos, perTab, items, categories };
       state.history = appendSnapshot(state.history, {
         ts: Date.now(),
         totalChaos,
@@ -278,6 +327,16 @@ const mount: MountFn = async ({ root, host }) => {
     const link = el('span', 'wl-link', text);
     link.addEventListener('click', () => void host.shell?.openExternal(SETTINGS_URL));
     return link;
+  }
+
+  function setSort(key: SortKey): void {
+    if (state.sortKey === key) {
+      state.sortDir = state.sortDir === 1 ? -1 : 1;
+    } else {
+      state.sortKey = key;
+      state.sortDir = key === 'name' ? 1 : -1;
+    }
+    render();
   }
 
   function render(): void {
@@ -358,6 +417,16 @@ const mount: MountFn = async ({ root, host }) => {
         );
       }
       shell.append(total);
+
+      if (state.last.categories.length) {
+        const cats = el('div', 'wl-cats');
+        for (const cat of state.last.categories) {
+          const chip = el('span', 'wl-cat');
+          chip.append(el('span', 'wl-cat-name', cat.name), el('span', 'wl-cat-val', `${formatChaos(cat.chaos)} c`));
+          cats.append(chip);
+        }
+        shell.append(cats);
+      }
     }
 
     if (state.history.length >= 2) {
@@ -408,31 +477,86 @@ const mount: MountFn = async ({ root, host }) => {
       }
       scroll.append(tabs);
 
-      scroll.append(el('div', 'wl-section', 'Most valuable'));
+      scroll.append(el('div', 'wl-section', `Items (${state.last.items.length})`));
+
+      const search = el('input', 'wl-search');
+      search.type = 'search';
+      search.placeholder = 'Search items…';
+      search.value = state.query;
+      search.spellcheck = false;
+      search.addEventListener('input', () => {
+        state.query = search.value;
+        renderItems();
+      });
+      scroll.append(search);
+
       const items = el('div', 'wl-items');
-      for (const item of state.last.top) {
-        const row = el('div', 'wl-item');
-        const iconCell = el('div');
-        if (item.icon) {
-          const img = el('img');
-          img.alt = '';
-          img.loading = 'lazy';
-          img.onerror = () => img.remove();
-          void resolveIcon(item.icon).then((src) => {
-            img.src = src;
-          });
-          iconCell.append(img);
-        }
-        row.append(
-          iconCell,
-          el('span', 'wl-item-name', item.name),
-          el('span', 'wl-item-count', item.count > 1 ? `×${item.count}` : ''),
-          el('span', 'wl-item-val', `${formatChaos(item.totalChaos)} c`),
-        );
-        items.append(row);
-      }
-      if (state.last.top.length === 0) items.append(el('div', 'wl-empty', 'Nothing priceable found.'));
       scroll.append(items);
+
+      const renderItems = () => {
+        items.innerHTML = '';
+
+        const head = el('div', 'wl-head');
+        head.append(el('span'));
+        const cols: { key: SortKey; label: string; cls: string }[] = [
+          { key: 'name', label: 'Name', cls: '' },
+          { key: 'qty', label: 'Qty', cls: 'num' },
+          { key: 'change', label: '7d', cls: 'num' },
+          { key: 'total', label: 'Total', cls: 'num' },
+        ];
+        for (const col of cols) {
+          const btn = el('button', `wl-sort ${col.cls}${state.sortKey === col.key ? ' on' : ''}`);
+          btn.type = 'button';
+          btn.textContent =
+            state.sortKey === col.key ? `${col.label} ${state.sortDir === 1 ? '▲' : '▼'}` : col.label;
+          btn.addEventListener('click', () => setSort(col.key));
+          head.append(btn);
+        }
+        items.append(head);
+
+        const q = state.query.trim().toLowerCase();
+        const list = (state.last?.items ?? [])
+          .filter((i) => !q || i.name.toLowerCase().includes(q))
+          .sort(compareItems(state.sortKey, state.sortDir));
+
+        for (const item of list.slice(0, MAX_ROWS)) {
+          const row = el('div', 'wl-item');
+          const iconCell = el('div');
+          if (item.icon) {
+            const img = el('img');
+            img.alt = '';
+            img.loading = 'lazy';
+            img.onerror = () => img.remove();
+            void resolveIcon(item.icon).then((src) => {
+              img.src = src;
+            });
+            iconCell.append(img);
+          }
+          const name = el('span', 'wl-item-name', item.name);
+          const tabNames = item.tabs?.length ? ` — ${item.tabs.join(', ')}` : '';
+          name.title = `${item.name} · ${formatChaos(item.unitChaos)} c each${tabNames}`;
+
+          const chg = el('span', 'wl-chg');
+          if (typeof item.change === 'number' && item.change !== 0) {
+            chg.textContent = `${item.change > 0 ? '+' : ''}${item.change.toFixed(1)}%`;
+            chg.classList.add(item.change > 0 ? 'wl-up' : 'wl-down');
+          }
+
+          row.append(
+            iconCell,
+            name,
+            el('span', 'wl-item-count', item.count > 1 ? `×${item.count}` : ''),
+            chg,
+            el('span', 'wl-item-val', `${formatChaos(item.totalChaos)} c`),
+          );
+          items.append(row);
+        }
+        if (list.length === 0) items.append(el('div', 'wl-empty', 'Nothing matches.'));
+        if (list.length > MAX_ROWS) {
+          items.append(el('div', 'wl-empty', `Showing ${MAX_ROWS} of ${list.length} — narrow the search to see the rest.`));
+        }
+      };
+      renderItems();
     } else if (!state.showTabs) {
       scroll.append(
         el('div', 'wl-empty', 'Pick the stash tabs to track, then take a snapshot to value them.'),

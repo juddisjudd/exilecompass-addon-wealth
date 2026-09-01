@@ -11,6 +11,40 @@ export interface ValuedItem {
   count: number;
   unitChaos: number;
   totalChaos: number;
+  /** poe.ninja 7-day change percentage, when known. */
+  change?: number;
+  category?: string;
+}
+
+export type SortKey = 'name' | 'qty' | 'change' | 'total';
+
+/**
+ * Comparator for the item table. Items with no known 7d change sort last
+ * either direction; ties break alphabetically.
+ */
+export function compareItems(key: SortKey, dir: 1 | -1) {
+  return (a: ValuedItem, b: ValuedItem): number => {
+    let cmp = 0;
+    switch (key) {
+      case 'name':
+        cmp = a.name.localeCompare(b.name);
+        break;
+      case 'qty':
+        cmp = a.count - b.count;
+        break;
+      case 'change': {
+        if (a.change == null && b.change == null) cmp = 0;
+        else if (a.change == null) return 1;
+        else if (b.change == null) return -1;
+        else cmp = a.change - b.change;
+        break;
+      }
+      case 'total':
+        cmp = a.totalChaos - b.totalChaos;
+        break;
+    }
+    return cmp * dir || a.name.localeCompare(b.name);
+  };
 }
 
 const FRAME_UNIQUE = 3;
@@ -33,12 +67,15 @@ export function valueItem(item: StashItem, book: PriceBook): ValuedItem | null {
   }
   if (!unit) return null;
 
+  const meta = book.meta.get(display.toLowerCase());
   return {
     name: display,
     icon: item.icon,
     count,
     unitChaos: unit,
     totalChaos: unit * count,
+    change: meta?.change,
+    category: meta?.category,
   };
 }
 

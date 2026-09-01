@@ -5,7 +5,8 @@ of Sidekick's Wealth Tracker.
 
 Pick the stash tabs to track, take a snapshot, and the panel values every
 priceable item against live poe.ninja prices: total in chaos (and divines),
-per-tab totals, your most valuable items, and a history sparkline across
+a category breakdown, per-tab totals, a searchable and sortable item list
+(with each item's 7-day price change), and a history sparkline across
 snapshots. Rares, gems and maps are deliberately not counted — poe.ninja can't
 price them by name, and guessing would be worse than omitting.
 

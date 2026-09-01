@@ -1,6 +1,6 @@
-// poe.ninja price book for a league: one map of item name → chaos value,
-// built from the exchange categories (stackables) plus the unique item
-// overviews. Same endpoints the Economy add-on uses; each table is disk-cached
+// poe.ninja price book for a league: chaos values matched by exact item name
+// (exchange tables) or unique name at the cheapest variant, plus poe.ninja's
+// 7-day change and a category label per priced name. Each table is disk-cached
 // by the host for an hour, so a snapshot costs at most one download per
 // category per hour.
 import type { AddonHost } from './types';
@@ -38,12 +38,36 @@ const UNIQUE_TYPES = [
   'UniqueJewel',
 ];
 
+const CATEGORY_LABELS: Record<string, string> = {
+  Currency: 'Currency',
+  Fragment: 'Fragments',
+  Scarab: 'Scarabs',
+  DivinationCard: 'Div Cards',
+  Essence: 'Essences',
+  Oil: 'Oils',
+  Tattoo: 'Tattoos',
+  Runegraft: 'Runegrafts',
+  Fossil: 'Fossils',
+  Resonator: 'Resonators',
+  DeliriumOrb: 'Delirium',
+  Omen: 'Omens',
+  Artifact: 'Artifacts',
+  AllflameEmber: 'Embers',
+};
+
+export interface PriceMeta {
+  /** 7-day change percentage from poe.ninja's sparkline. */
+  change?: number;
+  category: string;
+}
+
 export interface PriceBook {
   league: string;
   /** Exact item name (lowercased) → chaos value, for currency-like items. */
   exchange: Map<string, number>;
   /** Unique name (lowercased) → cheapest chaos value across variants. */
   uniques: Map<string, number>;
+  meta: Map<string, PriceMeta>;
   /** Chaos per divine, for display conversion (0 when unknown). */
   divineChaos: number;
 }
@@ -62,16 +86,22 @@ async function getJson<T>(net: Net, url: string): Promise<T | null> {
 
 interface ExchangeOverview {
   core?: { items?: { id: string; name: string }[]; primary?: string };
-  lines?: { id: string; primaryValue: number }[];
+  lines?: { id: string; primaryValue: number; sparkline?: { totalChange?: number } }[];
   items?: { id: string; name: string }[];
 }
 
 interface ItemOverview {
-  lines?: { name: string; chaosValue?: number; links?: number }[];
+  lines?: { name: string; chaosValue?: number; sparkLine?: { totalChange?: number } }[];
 }
 
 export async function loadPriceBook(net: Net, league: string): Promise<PriceBook> {
-  const book: PriceBook = { league, exchange: new Map(), uniques: new Map(), divineChaos: 0 };
+  const book: PriceBook = {
+    league,
+    exchange: new Map(),
+    uniques: new Map(),
+    meta: new Map(),
+    divineChaos: 0,
+  };
   const leagueParam = encodeURIComponent(league);
 
   await Promise.all([
@@ -88,7 +118,13 @@ export async function loadPriceBook(net: Net, league: string): Promise<PriceBook
       for (const line of data.lines ?? []) {
         if (typeof line.primaryValue !== 'number' || line.primaryValue <= 0) continue;
         const name = names.get(line.id);
-        if (name) book.exchange.set(name.toLowerCase(), line.primaryValue);
+        if (!name) continue;
+        const key = name.toLowerCase();
+        book.exchange.set(key, line.primaryValue);
+        book.meta.set(key, {
+          change: line.sparkline?.totalChange,
+          category: CATEGORY_LABELS[type] ?? type,
+        });
       }
     }),
     ...UNIQUE_TYPES.map(async (type) => {
@@ -103,6 +139,10 @@ export async function loadPriceBook(net: Net, league: string): Promise<PriceBook
         const existing = book.uniques.get(key);
         if (existing === undefined || line.chaosValue < existing) {
           book.uniques.set(key, line.chaosValue);
+          book.meta.set(key, {
+            change: line.sparkLine?.totalChange,
+            category: 'Uniques',
+          });
         }
       }
     }),

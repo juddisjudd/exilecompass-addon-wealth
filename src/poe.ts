@@ -57,6 +57,21 @@ export async function fetchLeagues(poe: PoeBridge): Promise<League[]> {
   return (data.leagues ?? []).filter((l) => !!l.id);
 }
 
+/**
+ * The current challenge league: the account list leads with Standard,
+ * Hardcore and their SSF/Ruthless variants, none of which is what a wealth
+ * tracker should open on.
+ */
+export function defaultLeague(list: string[]): string {
+  return (
+    list.find(
+      (l) => l !== 'Standard' && !l.startsWith('Hardcore') && !/ssf|ruthless|solo|void/i.test(l),
+    ) ??
+    list[0] ??
+    ''
+  );
+}
+
 /** Flattened tab list — folders are dropped, their children keep `parent`. */
 export async function fetchStashTabs(poe: PoeBridge, league: string): Promise<StashTabMeta[]> {
   const data = parseBody<{ stashes?: StashTabMeta[] }>(await poe.stashList(league), 'stash list');
