@@ -26,6 +26,9 @@ const EXCHANGE_TYPES = [
   'Omen',
   'Artifact',
   'AllflameEmber',
+  'Ducat',
+  'Astrolabe',
+  'EnshroudingCrystal',
 ];
 
 // Item overviews: uniques matched by name (cheapest variant — conservative
@@ -36,6 +39,8 @@ const UNIQUE_TYPES = [
   'UniqueAccessory',
   'UniqueFlask',
   'UniqueJewel',
+  'UniqueRelic',
+  'UniqueTincture',
 ];
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -53,6 +58,9 @@ const CATEGORY_LABELS: Record<string, string> = {
   Omen: 'Omens',
   Artifact: 'Artifacts',
   AllflameEmber: 'Embers',
+  Ducat: 'Ducats',
+  Astrolabe: 'Astrolabes',
+  EnshroudingCrystal: 'Crystals',
 };
 
 export interface PriceMeta {
